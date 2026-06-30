@@ -1,0 +1,584 @@
+---
+title: "Clasificación de expresión génica en Alzheimer y demencia vascular (GSE122063)"
+author: "David Palomino Plantón"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Carga y preprocesado de los datos
+
+En primer lugar vamos a empezar cargar todas las librerias y los datos. También vamos a establecer una seed (set.seed) al principio que no volverá a cambiarse para facilitar la reproducibilidad de los resultados obtenidos.
+
+```{r}
+#Establecer una semilla
+set.seed(123)
+```
+
+
+```{r, eval=FALSE}
+
+# Instalación de librerías si no están instaladas
+if (!requireNamespace("GEOquery", quietly = TRUE)) {
+  BiocManager::install("GEOquery")
+}
+if (!requireNamespace("caret", quietly = TRUE)) {
+  install.packages("caret")
+}
+if (!requireNamespace("DT", quietly = TRUE)) {
+  install.packages("DT")
+}
+if (!requireNamespace("ggplot2", quietly = TRUE)) {
+  install.packages("ggplot2")
+}
+if (!requireNamespace("patchwork", quietly = TRUE)) {
+  install.packages("patchwork")
+}
+if (!requireNamespace("doParallel", quietly = TRUE)) {
+  install.packages("doParallel")
+}
+
+# Carga de librerías necesarias
+
+library(GEOquery)
+library(caret)
+library(DT)
+library(ggplot2)
+library(patchwork)
+library(doParallel)
+
+# Activamos el procesamiento en paralelo para acelerar los cálculos
+registerDoParallel(cores = 4)
+
+# Descarga del dataset desde GEO
+gse    <- "GSE122063"
+ngenes <- 5000
+
+gset <- getGEO(gse, GSEMatrix = TRUE)
+eset <- gset[[1]]
+
+# Extraemos la matriz de expresión y los metadatos de las muestras
+expr <- exprs(eset)
+meta <- pData(eset)
+
+# Definimos la variable respuesta a partir del diagnóstico del paciente
+table(meta$`patient diagnosis:ch1`)
+y <- meta$`patient diagnosis:ch1`
+
+# Transponemos la matriz y nos quedamos con los genes de mayor varianza
+X    <- t(expr)
+vars <- apply(X, 2, var)
+X    <- X[, order(vars, decreasing = TRUE)[1:ngenes]]
+
+saveRDS(X,    "X.rds")
+saveRDS(y,    "y.rds")
+saveRDS(eset, "eset.rds")
+```
+
+vamos a unir la variable respuesta a los datos en los que tenemos los genes para generar el dataframe en el que ya lo tengamos todo junto.
+
+```{r}
+if (!requireNamespace("GEOquery", quietly = TRUE)) {
+  BiocManager::install("GEOquery")
+}
+if (!requireNamespace("caret", quietly = TRUE)) {
+  install.packages("caret")
+}
+if (!requireNamespace("DT", quietly = TRUE)) {
+  install.packages("DT")
+}
+if (!requireNamespace("ggplot2", quietly = TRUE)) {
+  install.packages("ggplot2")
+}
+if (!requireNamespace("patchwork", quietly = TRUE)) {
+  install.packages("patchwork")
+}
+if (!requireNamespace("doParallel", quietly = TRUE)) {
+  install.packages("doParallel")
+}
+library(GEOquery)
+library(caret)
+library(DT)
+library(ggplot2)
+library(patchwork)
+library(doParallel)
+registerDoParallel(cores = 4)
+
+X    <- readRDS("X.rds")
+y    <- readRDS("y.rds")
+eset <- readRDS("eset.rds")
+
+datos <- as.data.frame(X)
+datos$y <- factor(y)
+levels(datos$y) <- make.names(levels(datos$y))
+```
+
+
+# Análisis
+
+## Análisis descriptivo y PCA
+
+Se realiza un análisis descriptivo de los datos y un PCA exploratorio sobre la distribución de las variables del problema.
+
+### Balance de clases e implicaciones
+
+```{r}
+dim(X)
+table(y)
+
+barplot(table(y),
+        col = c("steelblue", "orange", "darkgreen"),
+        main = "Distribución de ejemplos por clase",
+        xlab = "Clase",
+        ylab = "Número de muestras")
+```
+
+Vemos que tenemos un dataset con 5000 genes y 136 ejemplos, los cuales están divididos en las clases Alzheimer's disease, Control y Vascular dementia. La distribución de clases del dataset muestra que existen 56 muestras correspondientes a pacientes con Alzheimer, 36 con demencia y 44 controles. Por tanto, el dataset presenta un cierto desbalance entre clases, ya que el número de muestras no es igual para todas ellas. No obstante, este desbalance no es extremadamente acusado.
+
+Este desbalance puede afectar al entrenamiento de los modelos de clasificación, ya que los algoritmos tienden a favorecer la clase mayoritaria durante el proceso de aprendizaje. Como consecuencia, el modelo podría obtener una alta precisión global pero un rendimiento peor en las clases menos representadas.
+
+Dado que el número total de muestras es relativamente reducido, no resulta conveniente aplicar técnicas de downsampling, ya que eliminar ejemplos implicaría perder información valiosa. Por ello, una alternativa más adecuada es aplicar técnicas de oversampling, como el upsampling simple repitiendo ejemplos existentes, que permite equilibrar el número de ejemplos entre clases replicando muestras de las clases minoritarias. Asimismo, para evaluar los modelos se pueden utilizar métricas robustas frente al desbalance, como la balanced accuracy, que tiene en cuenta el rendimiento del modelo en cada clase por igual.
+
+### Valores nulos
+
+```{r}
+sum(is.na(X))
+```
+Se comprobó la presencia de valores nulos en la matriz de datos mediante la función is.na(). El resultado indica que no existen valores faltantes en el dataset. En caso de que existieran valores nulos, podrían tratarse mediante técnicas de imputación.
+
+### Separabilidad de clases en el espacio del PCA
+
+
+```{r}
+# =========================
+# PCA
+# =========================
+
+# Calcular PCA sobre los predictores
+pca_res <- prcomp(X, center = TRUE, scale. = TRUE)
+
+# Scores de las muestras
+scores <- as.data.frame(pca_res$x)
+scores$Class <- y
+
+var_exp <- (pca_res$sdev^2) / sum(pca_res$sdev^2)
+
+# =========================
+# Visualización 1: PC1 vs PC2
+# =========================
+
+ggplot(scores, aes(x = PC1, y = PC2, color = Class, fill = Class)) +
+  geom_point(size = 3, alpha = 0.8) +
+  stat_ellipse(geom = "polygon", alpha = 0.15, color = NA) +
+  theme_minimal() +
+  labs(
+    title = "PCA: proyección de las muestras en PC1 y PC2",
+    x = paste0("PC1 (", round(var_exp[1] * 100, 2), "%)"),
+    y = paste0("PC2 (", round(var_exp[2] * 100, 2), "%)")
+  )
+
+# =========================
+# Visualización 2: PC1 vs PC3
+# =========================
+
+ggplot(scores, aes(x = PC1, y = PC3, color = Class, fill = Class)) +
+  geom_point(size = 3, alpha = 0.8) +
+  stat_ellipse(geom = "polygon", alpha = 0.15, color = NA) +
+  theme_minimal() +
+  labs(
+    title = "PCA: proyección de las muestras en PC1 y PC3",
+    x = paste0("PC1 (", round(var_exp[1] * 100, 2), "%)"),
+    y = paste0("PC3 (", round(var_exp[3] * 100, 2), "%)")
+  )
+
+# =========================
+# Visualización 3: PC2 vs PC3
+# =========================
+
+ggplot(scores, aes(x = PC2, y = PC3, color = Class, fill = Class)) +
+  geom_point(size = 3, alpha = 0.8) +
+  stat_ellipse(geom = "polygon", alpha = 0.15, color = NA) +
+  theme_minimal() +
+  labs(
+    title = "PCA: proyección de las muestras en PC2 y PC3",
+    x = paste0("PC2 (", round(var_exp[2] * 100, 2), "%)"),
+    y = paste0("PC3 (", round(var_exp[3] * 100, 2), "%)")
+  )
+```
+
+La visualización de las muestras en el espacio de los tres primeros componentes principales muestra un solapamiento considerable entre las distintas clases, lo que indica que la separación entre controles, pacientes con Alzheimer y pacientes con demencia vascular no es completamente clara en una representación de baja dimensionalidad.
+
+Sin embargo, se observa que  muchos controles están más concentrados hacia valores negativos o cercanos a cero en PC1. Esto sugiere que el primer componente podría estar capturando parte de la variabilidad asociada a la enfermedad.
+
+En el plano definido por PC1 y PC3 se observa que las muestras de demencia vascular tienden a concentrarse alrededor de valores del tercer componente principal cercanos a cero o ligeramente negativos. Sin embargo, existe un solapamiento considerable con las otras clases, lo que indica que PC3 por sí solo no permite una separación clara entre los distintos tipos de enfermedad.
+
+En conjunto, los tres primeros componentes principales muestran cierto grado de estructura en los datos, pero no permiten distinguir claramente entre las distintas clases. Esto sugiere que, aunque el dataset contiene cierta información discriminativa, será necesario emplear modelos de clasificación más complejos para diferenciar adecuadamente entre controles y los distintos tipos de enfermedad neurodegenerativa.
+
+
+### Varianza explicada por los primeros componentes
+
+```{r}
+# =========================
+# Varianza explicada
+# =========================
+
+
+# Tabla con varianza explicada y acumulada
+tabla_varianza <- data.frame(
+  Componente = paste0("PC", 1:length(var_exp)),
+  Varianza_Explicada = var_exp,
+  Varianza_Acumulada = cumsum(var_exp)
+)
+
+# Mostrar primeras componentes
+head(tabla_varianza, 10)
+
+# =========================
+# Scree plot
+# =========================
+p1 <- ggplot(tabla_varianza[1:20, ], aes(x = seq_along(Varianza_Explicada), y = Varianza_Explicada)) +
+  geom_col(fill = "lightblue", alpha = 0.7) +
+  geom_line() +
+  geom_point(size = 2) +
+  theme_minimal() +
+  labs(
+    title = "Scree plot",
+    x = "Componente principal",
+    y = "Proporción de varianza explicada"
+  )
+
+# =========================
+# Varianza acumulada
+# =========================
+p2 <- ggplot(tabla_varianza[1:20, ], aes(x = seq_along(Varianza_Acumulada), y = Varianza_Acumulada)) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  labs(
+    title = "Varianza explicada acumulada",
+    x = "Componente principal",
+    y = "Varianza acumulada"
+  )
+
+# ponerlos juntos
+p1 + p2
+```
+
+Los tres primeros componentes principales explican conjuntamente el 31.56% de la variabilidad total del dataset. Desglosando por componente, PC1 explica el 15.79%, PC2 el 9.04% y PC3 el 6.73%.
+
+Este porcentaje de varianza acumulada es relativamente bajo, lo que significa que la variabilidad de los datos está muy repartida entre muchos componentes, como se puede apreciar en el scree plot, donde la curva desciende de forma gradual sin un codo pronunciado. De hecho, para explicar el 50% de la varianza serían necesarios más de 10 componentes principales.
+
+Este resultado es coherente con la dificultad observada en la visualización del PCA, donde las tres clases no se separaban claramente en el espacio de baja dimensionalidad, y refuerza la necesidad de utilizar modelos de machine learning que trabajen con el espacio completo de variables en lugar de una representación reducida.
+
+
+### Genes con mayor contribución por componente
+
+Para ello, primero debemos hacer que en la tabla de resultados se muestren los nombres de los genes, ya que ahora mismo solo nos mostraría el identificador de la sonda del microarray.
+
+```{r}
+annot <- fData(eset)
+
+loadings <- as.data.frame(pca_res$rotation)
+loadings$Probe <- rownames(loadings)
+
+loadings$Gene <- annot$`GENE_SYMBOL`[match(loadings$Probe, annot$ID)]
+loadings <- loadings[!is.na(loadings$Gene) & loadings$Gene != "", ]
+```
+
+Ahora podemos crear la tabla de resultados incluyendo los nombres de cada uno de los 10 genes más influyentes en los dos primeros componentes.
+
+```{r}
+
+# Top 10 predictores para PC1
+top_pc1 <- loadings[order(abs(loadings$PC1), decreasing = TRUE),
+                    c("Gene", "PC1")][1:10, ]
+
+# Top 10 predictores para PC2
+top_pc2 <- loadings[order(abs(loadings$PC2), decreasing = TRUE),
+                    c("Gene", "PC2")][1:10, ]
+
+datatable(top_pc1,
+          options = list(pageLength = 10, dom = "t"),
+          rownames = FALSE)
+
+datatable(top_pc2,
+          options = list(pageLength = 10, dom = "t"),
+          rownames = FALSE)
+```
+
+Para interpretar los dos primeros componentes del PCA se han analizado los genes con mayor loading en cada componente, ya que son los que más contribuyen a explicar la variabilidad de los datos.
+
+PC1 está dominado por genes con loadings negativos, lo que indica que todos contribuyen en la misma dirección a excepción de SNORD17, que presenta un loading positivo. Destacan genes como SYP, PNMA2, SNORD17, MYT1L, BEX5, UNC13A, MLLT11, AMPH, CRYM y RTN1, muchos de ellos relacionados con función sináptica, transmisión neuronal y mantenimiento de neuronas. SYP es un marcador de densidad sináptica cuya reducción está bien documentada en Alzheimer, UNC13A es una proteína presináptica cuyas variantes se han asociado a demencia frontotemporal, y RTN1 interactúa con la proteína APP y participa en la regulación de la producción de beta-amiloide. En conjunto, estos genes sugieren que PC1 captura principalmente variabilidad asociada a la integridad neuronal y la función sináptica, procesos fuertemente implicados en enfermedades neurodegenerativas.
+
+PC2 presenta un perfil biológico menos coherente. Aparecen genes como XLOC_003809, CLC, SSX3, CYP2S1, INO80D, XLOC_l2_007470, P2RX3, XLOC_000836, SSX3 y PAX9. Entre ellos destacan genes relacionados con procesos inflamatorios y metabolismo como CLC, CYP2S1, INO80D y P2RX3, junto con SSX3 que aparece en dos sondas distintas y cuya presencia en tejido cerebral es difícil de justificar biológicamente. Además, tres de los diez genes más influyentes son lncRNAs sin función caracterizada (XLOC_003809, XLOC_l2_007470 y XLOC_000836), lo que sugiere que esta componente podría reflejar una mezcla de señal biológica secundaria y variabilidad técnica.
+
+En conjunto, los resultados del PCA indican que existe una señal biológica real en los datos, especialmente en PC1, asociada a procesos conocidos de neurodegeneración. Sin embargo, la separación entre clases en el espacio PCA no es perfecta, lo que sugiere que el problema de clasificación no es trivial y que será necesario utilizar modelos de machine learning más complejos para discriminar adecuadamente entre las tres clases.
+
+
+## Modelos de clasificación
+
+### Creación y evaluación de modelos Random Forest y SVM
+
+Se desarrollan modelos de ML multiclase para distinguir entre los tipos de condición del sujeto, con selección de modelos basada en la optimización de hiperparámetros mediante búsqueda en grid. El grid se diseña buscando un compromiso entre la amplitud del espacio de hiperparámetros explorado y un consumo razonable de recursos de computación. Se emplean modelos basados tanto en bosques aleatorios como en máquinas de vectores soporte.
+
+En primer lugar, vamos a separar los datos en los conjuntos de train y de test para validación.
+
+```{r}
+trainIndex <- createDataPartition(datos$y,
+                                  p = 0.66,
+                                  list = FALSE,
+                                  times = 1)
+XTrain <- datos[trainIndex, ]
+XTest  <- datos[-trainIndex, ]
+```
+
+
+El siguiente paso es crear el modelo de entrenamiento, con una validación cruzada de 10 pliegues:
+
+```{r}
+practica.traincontrol.cv.10 <- trainControl(
+  method          = "cv",
+  number          = 10,
+  sampling        = "up",
+  summaryFunction = multiClassSummary,
+  classProbs      = TRUE,
+  returnResamp    = "final",
+  verboseIter     = FALSE,
+  allowParallel   = TRUE
+)
+```
+
+Como vimos anteriormente, existía cierto desbalanceo entre las clases existentes. Por ello, hemos usado el parámetro sampling = "up"; de esta manera sobre los datos de entrenamiento se aplicará un upsampling simple repitiendo ejemplos existentes hasta igualar el tamaño de las clases con la clase mayoritaria.
+
+
+Para crear el modelo basado en random forest usaremos el paquete caret mediante el método ranger.
+
+```{r, eval=FALSE}
+rf_grid <- expand.grid(
+  mtry          = c(50, 70, 150, 250),
+  splitrule     = "gini",
+  min.node.size = c(5, 7, 9)
+)
+
+ranger.cv.10 <- train(
+  y ~ .,
+  data       = XTrain,
+  method     = "ranger",
+  tuneGrid   = rf_grid,
+  trControl  = practica.traincontrol.cv.10,
+  importance = "impurity",
+  metric     = "Mean_Balanced_Accuracy"
+)
+
+saveRDS(ranger.cv.10, "ranger.cv.10.rds")
+```
+
+Una vez creado nuestro modelo con random forest, vamos a proceder a crear el modelo con SVM
+
+```{r, eval=FALSE}
+
+svm_grid <- expand.grid(
+  C     = c(0.01, 0.1, 1, 10, 100),
+  sigma = c(0.00002, 0.0002, 0.002)
+)
+
+svm.cv.10 <- train(
+  y ~ .,
+  data       = XTrain,
+  method     = "svmRadial",
+  tuneGrid   = svm_grid,
+  trControl  = practica.traincontrol.cv.10,
+  preProcess = c("center", "scale"),
+  metric     = "Mean_Balanced_Accuracy"
+)
+
+saveRDS(svm.cv.10, "svm.cv.10.rds")
+```
+
+Cargamos los modelos guardados en RDS:
+
+```{r}
+# Cargamos los modelos guardados
+ranger.cv.10 <- readRDS("ranger.cv.10.rds")
+svm.cv.10    <- readRDS("svm.cv.10.rds")
+```
+
+
+
+```{r}
+#Resultados y mejor modelo RF
+ranger.cv.10
+plot(ranger.cv.10)
+```
+
+Al análizar los resultados del modelo vemos como la combinación más efectiva de hiperparámetros de entre todas las realizadas es mtry = 150 y min.node.size = 7
+
+```{r}
+#Resultados y mejor modelo SVM
+svm.cv.10
+plot(svm.cv.10)
+```
+
+En los resultados del modelo se observa como el mejor modelo es aquel resultante de la combinación de hiperparámetros sigma = 2e-05 y C = 100.
+
+También se aprecia que con sigma = 0.002 no se observa que el balanced accuracy se modifique para ningún valor de C, por tanto podemos deducir que sigma = 0.002 es un valor demasiado alto del hiperparámetro para los datos de este problema.
+
+
+## Resultados e interpretación
+
+### Estrategia de optimización de hiperparámetros
+
+Random Forest
+
+Para el modelo basado en random forest se han explorado tres hiperparámetros:
+
+- mtry (50, 70, 150, 250): número de genes candidatos que se evalúan en cada split del árbol. El valor teórico mínimo recomendado para clasificación es √p = √5000 ≈ 70, por lo que se incluye este valor como referencia y se exploran valores superiores hasta 250. Usar valores más altos es conveniente en este problema porque la mayoría de los 5000 genes son probablemente irrelevantes, por lo que aumentar mtry incrementa la probabilidad de incluir genes informativos en cada división.
+
+- min.node.size (5, 7, 9): tamaño mínimo que debe tener un nodo para poder dividirse. Se prueban únicamente valores impares entre 5 y 9 porque con tan pocas muestras valores inferiores provocarían sobreajuste al seguir ramificando nodos con muy pocos ejemplos, y valores superiores generarían árboles demasiado simples con riesgo de infraajuste. Se prueban valores impares para evitar que se produzcan empates al votar la clase mayoritaria en ese nodo, lo que hace las decisiones del árbol más deterministas.
+
+- splitrule (gini): criterio de división de los nodos, fijado a gini ya que es el estándar para problemas de clasificación multiclase.
+
+SVM
+
+Para el modelo basado en SVM se han explorado los siguientes hiperparámetros:
+
+- C (0.01, 0.1, 1, 10, 100): parámetro de penalización que controla el equilibrio entre maximizar el margen de separación y minimizar los errores de clasificación. Valores bajos de C permiten más errores pero generan modelos más generales, mientras que valores altos penalizan más los errores con riesgo de sobreajuste. Se exploran cinco valores en escala logarítmica para cubrir un amplio rango de comportamientos.
+
+- sigma (0.00002, 0.0002, 0.002): parámetro del kernel radial que controla el radio de influencia de cada muestra. Se toma como valor central el teórico 1/p = 1/5000 = 0.0002, explorando un orden de magnitud por encima y por debajo en escala logarítmica, que es la estrategia estándar para este hiperparámetro en problemas de alta dimensionalidad.
+
+El grid de 5×3 = 15 combinaciones supone un coste computacional asumible con validación cruzada de 10 pliegues, cubriendo a la vez modelos simples (C bajo, sigma bajo) y más complejos (C alto, sigma alto).
+
+### Métricas de rendimiento y estrategia de remuestreo
+
+Como métrica principal para seleccionar el mejor modelo se ha utilizado la Balanced Accuracy (Mean_Balanced_Accuracy), que calcula la media de la sensibilidad de cada clase. Esta métrica es más adecuada que la Accuracy simple en problemas multiclase con cierto desbalance, ya que penaliza por igual los errores en todas las clases independientemente de su tamaño.
+
+La estrategia de remuestreo utilizada es validación cruzada de 10 pliegues, que divide los datos de entrenamiento en 10 subconjuntos, entrenando el modelo en 9 de ellos y validando en el restante de forma rotativa. Esto proporciona una estimación más fiable del rendimiento que una simple partición train/test, ya que todos los datos participan tanto en el entrenamiento como en la validación. Adicionalmente, en cada fold se aplica upsampling sobre los datos de entrenamiento para compensar el desbalance de clases.
+
+El motivo por el que se ha seleccionado Balanced Accuracy es porque aunque se aplica upsampling en el entrenamiento, el fold de validación mantiene la distribución original desbalanceada, por lo que esta métrica es más robusta para comparar modelos.
+
+### Comparación y selección de modelos
+
+Para determinar el mejor algoritmo se han analizado los resultados obtenidos durante la validación cruzada y en el conjunto de test.
+
+```{r}
+#Comparación entre mejores modelos
+modelos <- list(
+  RF  = ranger.cv.10,
+  SVM = svm.cv.10
+)
+
+practica.resample <- resamples(modelos)
+summary(practica.resample)
+
+bwplot(practica.resample, metric = "Mean_Balanced_Accuracy")
+densityplot(practica.resample, metric = "Mean_Balanced_Accuracy", auto.key = TRUE)
+
+difValues <- diff(practica.resample, adjustment = "none")
+summary(difValues)
+
+#Predicción en test
+
+pred_rf  <- predict(ranger.cv.10, newdata = XTest)
+pred_svm <- predict(svm.cv.10,    newdata = XTest)
+
+confusionMatrix(pred_rf,  XTest$y)
+confusionMatrix(pred_svm, XTest$y)
+
+
+#Tabla con métricas obtenidas en validación
+tabla_metricas <- data.frame(
+  Metrica = c(
+    "Accuracy",
+    "Kappa",
+    "Mean Balanced Accuracy (CV)",
+    "Mean Balanced Accuracy (Test)",
+    "Balanced Accuracy (Alzheimer)",
+    "Balanced Accuracy (Control)",
+    "Balanced Accuracy (Demencia)",
+    "Sensitivity (Alzheimer)",
+    "Sensitivity (Control)",
+    "Sensitivity (Demencia)",
+    "Specificity (Alzheimer)",
+    "Specificity (Control)",
+    "Specificity (Demencia)"
+  ),
+  Random_Forest = c(
+    0.9333,
+    0.8992,
+    0.9306,
+    0.9576,
+    0.9211,
+    0.9516,
+    1.0000,
+    0.8421,
+    1.0000,
+    1.0000,
+    1.0000,
+    0.9032,
+    1.0000
+  ),
+  SVM = c(
+    0.9556,
+    0.9325,
+    0.8977,
+    0.9684,
+    0.9474,
+    0.9677,
+    1.0000,
+    0.8947,
+    1.0000,
+    1.0000,
+    1.0000,
+    0.9355,
+    1.0000
+  )
+)
+
+datatable(tabla_metricas,
+          options = list(pageLength = 15, dom = "t"),
+          rownames = FALSE)
+```
+
+Durante la validación cruzada, el Random Forest obtiene una Mean Balanced Accuracy media de 93.06% frente al 89.77% del SVM. Los gráficos confirman esta superioridad: el bwplot muestra que el RF tiene una mediana más alta y un rango intercuartílico desplazado hacia valores más elevados (0.92-1.00) frente al SVM (0.88-0.92). El densityplot muestra que la curva del RF es más ancha pero centrada en valores altos, mientras que la del SVM está más concentrada pero en torno a valores inferiores (~0.88-0.90). Además, el análisis de los resultados por combinación de hiperparámetros revela que el SVM con sigma = 0.002 obtiene una Balanced Accuracy de 0.50 en todas las combinaciones de C, lo que indica que ese valor de sigma es inviable para este problema. El t-test pareado confirma que las diferencias entre modelos no son estadísticamente significativas (p-valor = 0.227 para Mean Balanced Accuracy), aunque la tendencia favorable al RF es consistente en todas las métricas.
+
+En el conjunto de test los resultados se invierten ligeramente: el SVM obtiene una Accuracy de 95.56% frente al 93.33% del RF, con una Balanced Accuracy media de 96.84% frente al 95.76% del RF y un Kappa de 0.933 frente a 0.899. Desde el punto de vista clínico, el SVM detecta 1 caso adicional de Alzheimer (Sensitivity 89.47% vs 84.21%), manteniendo además una Specificity perfecta del 100% para Alzheimer, lo que significa que ningún paciente sano es clasificado erróneamente como enfermo. El RF en cambio clasifica 3 pacientes con Alzheimer como Control, mientras que el SVM solo comete 2 errores de este tipo.
+
+Dado que en test el SVM supera al RF en todas las métricas relevantes, incluyendo Accuracy, Balanced Accuracy, Kappa y Sensitivity para Alzheimer, y que ambos modelos mantienen una Specificity perfecta para Alzheimer, se selecciona el SVM como mejor modelo para este problema. Su mejor rendimiento en test sobre datos no vistos es el argumento definitivo, ya que es la estimación más honesta del rendimiento real del modelo.
+
+### Genes más relevantes e interpretación biológica
+
+```{r}
+importancia_svm <- varImp(svm.cv.10)$importance
+importancia_svm$Probe <- gsub("`", "", rownames(importancia_svm))
+
+# Añadir nombre del gen
+importancia_svm$Gene <- annot$`GENE_SYMBOL`[match(importancia_svm$Probe, annot$ID)]
+
+# Eliminar sondas sin gen anotado
+importancia_svm <- importancia_svm[!is.na(importancia_svm$Gene) & importancia_svm$Gene != "", ]
+
+# Para SVM la importancia es la media de las columnas de cada clase
+importancia_svm$Overall <- rowMeans(importancia_svm[, 1:3])
+
+# Ordenar y mostrar top 10
+importancia_svm <- importancia_svm[order(importancia_svm$Overall, decreasing = TRUE), ]
+datatable(head(importancia_svm[, c("Gene", "Overall")], 10))
+```
+
+Para identificar los genes más relevantes del modelo se ha analizado la importancia de variables del SVM, calculada como la media de la importancia por clase para cada gen.
+
+Los genes con mayor importancia son aquellos que más contribuyen a separar las tres clases del problema.
+
+Los genes más relevantes identificados por el modelo incluyen RBM3, CCT6B, SNX31, STMN1, SPP1 y MIA, siendo RBM3 y CCT6B los genes con mayor importancia relativa y con valores muy similares entre sí. En particular, SPP1 aparece representado por cuatro sondas distintas, lo que refuerza su posible relevancia biológica. XLOC_006951 aparece en décima posición pero al tratarse de un lncRNA sin función caracterizada su interpretación biológica directa no es posible.
+
+RBM3 y CCT6B lideran la importancia del modelo con valores prácticamente idénticos. RBM3 es una proteína asociada a mecanismos de neuroprotección y plasticidad sináptica, relacionada con procesos de protección neuronal en Alzheimer y Parkinson. CCT6B forma parte de un complejo implicado en el plegamiento de proteínas, un proceso relevante en patologías como el Alzheimer donde se acumulan proteínas mal plegadas como tau y beta-amiloide.
+
+SNX31 y STMN1 están relacionados con la integridad estructural y el tráfico intracelular de las neuronas. SNX31 pertenece a la familia de las sortinexinas, implicadas en el tráfico vesicular y el reciclaje endosomal, mecanismos que pueden afectar al procesamiento de proteínas neuronales. STMN1 regula la dinámica de los microtúbulos, cuya alteración es un mecanismo conocido de disfunción neuronal en la patología tau del Alzheimer.
+
+SPP1 y MIA apuntan a procesos inflamatorios e inmunes. SPP1 u osteopontina está implicada en la activación de la microglía y la neuroinflamación crónica, coherente con el papel conocido de la inflamación en la progresión de las demencias. MIA podría reflejar alteraciones en la respuesta inflamatoria del tejido cerebral, aunque su papel específico en neurodegeneración no está bien caracterizado.
+
+En conjunto, los genes más relevantes del modelo apuntan principalmente a cuatro procesos biológicos implicados en enfermedades neurodegenerativas: plegamiento proteico, tráfico intracelular, neuroprotección y neuroinflamación, lo que sugiere que el modelo está capturando señales moleculares coherentes con la biología de estas patologías. Es destacable además la coincidencia entre los genes más relevantes del SVM y los identificados previamente por el Random Forest, ya que ambos modelos señalan a RBM3, CCT6B, SNX31, STMN1 y SPP1 como los genes más informativos, lo que refuerza la robustez biológica de estos resultados.
+
