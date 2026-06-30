@@ -39,8 +39,6 @@ gene-expression-neurodegeneration-ml/
 └── gene_expression_classification.Rmd   # full analysis (R Markdown)
 ```
 
-> Optional: if you knit the document, you can also add the rendered `gene_expression_classification.html` so reviewers can see the figures without running the code.
-
 ---
 
 ## Methods
@@ -65,7 +63,6 @@ gene-expression-neurodegeneration-ml/
 
 ## Key results
 
-<!-- Cifras tomadas de tu propio informe; revísalas y ajústalas si lo ves necesario. -->
 - In cross-validation, **Random Forest** reached a mean balanced accuracy of **~93%**, slightly above **SVM** (**~90%**).
 - The paired t-test showed the difference was **not statistically significant** (p ≈ 0.23), though the trend consistently favoured Random Forest across metrics.
 - PCA's first component was dominated by genes linked to synaptic function and neuronal integrity (e.g. *SYP*, *UNC13A*, *RTN1*), processes strongly implicated in neurodegenerative disease.
@@ -81,4 +78,5 @@ gene-expression-neurodegeneration-ml/
 ## Author
 
 **David Palomino Plantón** — MSc in Bioinformatics, University of Murcia.
-<!-- TODO: añade tu LinkedIn / email si quieres que te contacten desde el repo. -->
+Email: davidpalplanton@gmail.com
+LinkedIn: www.linkedin.com/in/davidpalplanton
